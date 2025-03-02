@@ -122,40 +122,6 @@ Changed chunks: 3 of 1,269
 Processing time: 2.19 seconds
 ```
 
-## Core Requirements
-
-1. **File Processing**
-   - Handle files of any size, including those larger than available RAM
-   - Process multiple files in sequence
-   - Robust error handling for file access issues
-
-2. **Chunking**
-   - Split files into fixed-size chunks (configurable)
-   - Process each chunk independently
-   - Track chunk position within the file
-
-3. **Hashing**
-   - Apply cryptographic hash algorithms to each chunk
-   - Support multiple hash algorithms (SHA-256, SHA-1, xxHash)
-   - Optional calculation of overall file hash
-
-4. **Performance**
-   - Minimize memory usage and copying
-   - Optional multi-threading support
-   - Report processing speed and resource usage
-
-5. **Output Options**
-   - Multiple output formats (summary, JSON, detailed)
-   - Configurable output destination
-   - Machine-readable options for integration
-
-## Implementation Plan
-
-- **Phase 1**: Basic single-threaded implementation
-- **Phase 2**: Performance optimization and memory efficiency
-- **Phase 3**: Multi-threading support
-- **Phase 4**: Additional features (verification mode, content-defined chunking)
-
 ## License
 
 MIT
