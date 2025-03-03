@@ -36,11 +36,15 @@
 
 
 ## Immediate Next-Up
-- [ ] Implement CLI parsing
-- [ ] Read up on hashing API in zig
+- [ ] Read up on hashing API in Zig
 - [ ] Start basic impl
+- [ ] unrelated: have a way to quickly add stuff to a "later" checklist so that I can forget about it
+- [ ] unrelated: syntax highlighting for TODO
+- [ ] unrelated: add codecompanion and copilot?
 
 ### Done
+- [x] Handle TODOs
+- [x] Implement CLI parsing
 - [x] Clean up build.zig
 
 
@@ -61,8 +65,3 @@ Naive implementation:
   - FUTURE: Can we async this?
 - read chunk_size bytes, compute hash, store in buffer, increment index
 - output
-
-
-
-
-
