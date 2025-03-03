@@ -1,4 +1,5 @@
 const std = @import("std");
+const exit = std.process.exit;
 
 const HELP_TEXT =
     \\ zchunk [options] <filename>...
@@ -152,8 +153,70 @@ fn handleFile(fileArgs: FileArgs) void {
     std.debug.print("Outputting to a file: {?}\n\n", .{fileArgs});
 }
 
+fn handleReadError(err: std.fs.File.ReadError) noreturn {
+    std.debug.print("Encountered error while reading: {?}\n", .{err});
+    exit(1);
+}
+
+fn handleOpenError(err: std.fs.File.OpenError, path: []const u8) noreturn {
+    switch (err) {
+        std.fs.File.OpenError.FileNotFound => {
+            std.debug.print("Unable to find file: {s}\n\n", .{path});
+            std.process.exit(1);
+        },
+        else => exit(1),
+    }
+}
+
 fn handleStdout(stdoutArgs: StdoutArgs) void {
-    std.debug.print("Outputting to stdout: {?}\n\n", .{stdoutArgs});
+    var file: std.fs.File = undefined;
+    if (std.fs.path.isAbsolute(stdoutArgs.inputFname)) {
+        file = std.fs.openFileAbsolute(stdoutArgs.inputFname, std.fs.File.OpenFlags{ .mode = std.fs.File.OpenMode.read_only }) catch |err| handleOpenError(err, stdoutArgs.inputFname);
+    } else {
+        file = std.fs.cwd().openFile(stdoutArgs.inputFname, std.fs.File.OpenFlags{ .mode = std.fs.File.OpenMode.read_only }) catch |err| handleOpenError(err, stdoutArgs.inputFname);
+    }
+    const reader = std.fs.File.reader(file);
+    var buffered_reader = std.io.bufferedReader(reader);
+    var buffer: [65536]u8 = undefined;
+    const slice: []u8 = buffer[0..stdoutArgs.chunkSize];
+
+    var bytesRead: usize = buffered_reader.read(slice) catch |err| handleReadError(err);
+
+    var i: usize = 0;
+    if (stdoutArgs.hash == HashKind.Xxhash) {
+        std.debug.print("Xxhash support is unimplemented.\n\n", .{});
+        exit(1);
+    }
+    while (bytesRead > 0) : (bytesRead = buffered_reader.read(slice) catch |err| handleReadError(err)) {
+        std.debug.print("Chunk: {d}\tOffset: {d}\tHash: ", .{ i, i * stdoutArgs.chunkSize });
+        switch (stdoutArgs.hash) {
+            HashKind.Sha256 => {
+                var hash = std.crypto.hash.sha2.Sha256.init(.{});
+                hash.update(slice);
+                var result: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+                hash.final(&result);
+                for (result) |byte| {
+                    std.debug.print("{x:0>2}", .{byte});
+                }
+                std.debug.print("\n", .{});
+            },
+            HashKind.Sha1 => {
+                var hash = std.crypto.hash.Sha1.init(.{});
+                hash.update(slice);
+                var result: [std.crypto.hash.Sha1.digest_length]u8 = undefined;
+                hash.final(&result);
+                for (result) |byte| {
+                    std.debug.print("{x:0>2}", .{byte});
+                }
+                std.debug.print("\n", .{});
+            },
+            HashKind.Xxhash => {
+                std.debug.print("Unimplemented.\n", .{}); // TODO: Implement this?
+                exit(1);
+            },
+        }
+        i += 1;
+    }
 }
 
 pub fn main() !void {
