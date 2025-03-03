@@ -36,32 +36,28 @@
 
 
 ## Immediate Next-Up
-- [ ] Read up on hashing API in Zig
-- [ ] Start basic impl
-- [ ] unrelated: have a way to quickly add stuff to a "later" checklist so that I can forget about it
-- [ ] unrelated: syntax highlighting for TODO
-- [ ] unrelated: add codecompanion and copilot?
+- [ ] Store hash results in an arraylist so that we can either output or write to file
+- [ ] Only print at end, after computing hashes
+- [ ] Compute overall hash
+- [ ] Actually understand if `final` is doing the right thing
+- [ ] Figure out if I can use tagged union for hashes? prob not because not comptime
+- [ ] (stretch?) Implement xxhash
+
+
+### Side-quests
+- [ ] have a way to quickly add stuff to a "later" checklist so that I can forget about it
+- [ ] add codecompanion and copilot?
+- [ ] Figure out how to fix zig autofmt to not have such long lines?
 
 ### Done
+- [x] unrelated: syntax highlighting for TODO
+- [x] Start basic impl
+- [x] Read up on hashing API in Zig
 - [x] Handle TODOs
 - [x] Implement CLI parsing
 - [x] Clean up build.zig
 
 
 ## Open Questions
-- file are read as bytes, I imagine?
-- do we need to do anything special for binary formats?
-- we compute hashes for all the chunks, but how do you compute the hash for the entire thing if you can't store it all in memory. probably worthwhile to read up on how the hashing functions actually work
-- do we want to handle piping stuff in?
-
-## Notes
-
-Naive implementation:
-
-- allocate a buffer with length N/chunk_size, where N is the file size in bytes. Each elementin the buffer will contain the hash for the n-th chunk
-- read file from disk
-  - need to support big files, so need to stream rather than load whole file into memory
-  - how much to load at once? there is likely a tradeoff between too big, and it is wasteful because computing the hash is CPU bound while reading the IO bound
-  - FUTURE: Can we async this?
-- read chunk_size bytes, compute hash, store in buffer, increment index
-- output
+- do we want to handle piping data in?
+- for data backup/sync purposes, what if you add 1 byte to the beginning of the file. won't that cause all hashes to be different, meaning you have to probably sync everything?
