@@ -169,7 +169,12 @@ fn handleOpenError(err: stdfile.OpenError, path: []const u8) noreturn {
     }
 }
 
-fn handleStdout(stdoutArgs: StdoutArgs) void {
+fn printAndExitWithError(comptime msg: []const u8, args: anytype) noreturn {
+    std.debug.print(msg, args);
+    exit(1);
+}
+
+fn handleStdout(stdoutArgs: StdoutArgs, allocator: std.mem.Allocator) void {
     var file: stdfile = undefined;
     if (std.fs.path.isAbsolute(stdoutArgs.inputFname)) {
         file = std.fs
@@ -182,8 +187,8 @@ fn handleStdout(stdoutArgs: StdoutArgs) void {
     }
     const reader = stdfile.reader(file);
     var buffered_reader = std.io.bufferedReader(reader);
-    var buffer: [65536]u8 = undefined;
-    const slice: []u8 = buffer[0..stdoutArgs.chunkSize];
+    const slice: []u8 = allocator.alloc(u8, @as(usize, stdoutArgs.chunkSize) * 1000) catch printAndExitWithError("Unable to allocate memory.", .{});
+    defer allocator.free(slice);
 
     var bytesRead: usize = buffered_reader.read(slice) catch |err| handleReadError(err);
 
@@ -196,20 +201,16 @@ fn handleStdout(stdoutArgs: StdoutArgs) void {
         std.debug.print("Chunk: {d}\tOffset: {d}\tHash: ", .{ i, i * stdoutArgs.chunkSize });
         switch (stdoutArgs.hash) {
             HashKind.Sha256 => {
-                var hash = std.crypto.hash.sha2.Sha256.init(.{});
-                hash.update(slice);
                 var result: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
-                hash.final(&result);
+                std.crypto.hash.sha2.Sha256.hash(slice, &result, .{});
                 for (result) |byte| {
                     std.debug.print("{x:0>2}", .{byte});
                 }
                 std.debug.print("\n", .{});
             },
             HashKind.Sha1 => {
-                var hash = std.crypto.hash.Sha1.init(.{});
-                hash.update(slice);
                 var result: [std.crypto.hash.Sha1.digest_length]u8 = undefined;
-                hash.final(&result);
+                std.crypto.hash.Sha1.hash(slice, &result, .{});
                 for (result) |byte| {
                     std.debug.print("{x:0>2}", .{byte});
                 }
@@ -229,9 +230,11 @@ pub fn main() !void {
     var inputFnameBuf: [255]u8 = [_]u8{0} ** 255;
     var outputFnameBuf: [255]u8 = [_]u8{0} ** 255;
     const zcargs = parseArgs(&args, &inputFnameBuf, &outputFnameBuf);
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
     switch (zcargs) {
         ArgsType.help => std.debug.print("{s}\n\n", .{HELP_TEXT}),
         ArgsType.file => handleFile(zcargs.file),
-        ArgsType.stdout => handleStdout(zcargs.stdout),
+        ArgsType.stdout => handleStdout(zcargs.stdout, allocator),
     }
 }

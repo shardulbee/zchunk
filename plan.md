@@ -36,6 +36,10 @@
 
 
 ## Immediate Next-Up
+- [ ] figure out why single-threaded hash performance does not line up with [napkin math](https://github.com/sirupsen/napkin-math)
+   - hashing a 2GB file takes me 44 secs, when napkin math suggests that throughput is 2GiB/s
+   - maybe has to do with sequential SSD read, but that as well is 4GiB/s
+   - experiment with (1) reading larger sizes into memory before hashing chunks and (2) reading whole file into memory
 - [ ] Store hash results in an arraylist so that we can either output or write to file
 - [ ] Only print at end, after computing hashes
 - [ ] Compute overall hash
@@ -50,6 +54,7 @@
 - [ ] Figure out how to fix zig autofmt to not have such long lines?
 
 ### Done
+- [x] actually read the file in specified KB instad of bytes
 - [x] unrelated: syntax highlighting for TODO
 - [x] Start basic impl
 - [x] Read up on hashing API in Zig
