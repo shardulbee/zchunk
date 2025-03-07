@@ -61,7 +61,7 @@ fn parseArgs(args: *std.process.ArgIterator, inputFnameBuf: [*]u8, outputFnameBu
         if (std.mem.eql(u8, arg, "--help")) {
             return Args{ .help = HelpArgs{} };
         }
-        var split = std.mem.split(u8, arg, "=");
+        var split = std.mem.splitSequence(u8, arg, "=");
         if (std.mem.eql(u8, split.peek().?, arg)) {
             fnameArg = arg;
             break;
