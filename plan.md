@@ -35,6 +35,9 @@
    - Machine-readable options for integration
 
 
+## Currently Working On
+- [ ] read the whole file into memory and see if that helps with performance.
+
 ## Immediate Next-Up
 - [ ] figure out why single-threaded hash performance does not line up with [napkin math](https://github.com/sirupsen/napkin-math)
    - hashing a 2GB file takes me 44 secs, when napkin math suggests that throughput is 2GiB/s

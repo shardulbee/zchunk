@@ -1,6 +1,7 @@
 const std = @import("std");
 const exit = std.process.exit;
 const stdfile = std.fs.File;
+const sha2 = std.crypto.hash.sha2;
 
 const HELP_TEXT =
     \\ zchunk [options] <filename>...
@@ -23,7 +24,7 @@ const ArgsType = enum { help, file, stdout };
 const HelpArgs = struct {};
 const FileArgs = struct {
     /// User can specify up to 2^16 = 65,536 byte chunks
-    chunkSize: u16,
+    chunkSize: u32,
     hash: HashKind = HashKind.Sha256,
     mode: ModeKind = ModeKind.Summary,
     outputFname: []const u8,
@@ -33,7 +34,7 @@ const FileArgs = struct {
     threads: ?i8, // -1 means use num cores
 };
 const StdoutArgs = struct {
-    chunkSize: u16,
+    chunkSize: u32,
     hash: HashKind = HashKind.Sha256,
     mode: ModeKind = ModeKind.Summary,
     outputFname: ?[]const u8 = null,
@@ -49,7 +50,7 @@ fn parseArgs(args: *std.process.ArgIterator, inputFnameBuf: [*]u8, outputFnameBu
     _ = args.skip(); // skip executable
     var mode: ModeKind = ModeKind.Summary;
     var hash: HashKind = HashKind.Sha256;
-    var chunkSize: u16 = 1024;
+    var chunkSize: u32 = 64;
     var nThreads: i8 = 1;
     var inFile: ?[]const u8 = null;
     var outFile: ?[]const u8 = null;
@@ -92,7 +93,7 @@ fn parseArgs(args: *std.process.ArgIterator, inputFnameBuf: [*]u8, outputFnameBu
             }
         } else if (std.mem.eql(u8, flag, "--chunk-size")) {
             const chunkSizeStr = split.next().?;
-            chunkSize = std.fmt.parseInt(u16, chunkSizeStr, 0) catch |err| switch (err) {
+            chunkSize = std.fmt.parseInt(u32, chunkSizeStr, 0) catch |err| switch (err) {
                 std.fmt.ParseIntError.Overflow => {
                     std.debug.print("Provided chunk-size is too large. Max supported size is 65536. Provided: {s}\n", .{chunkSizeStr});
                     std.process.exit(1);
@@ -175,6 +176,14 @@ fn printAndExitWithError(comptime msg: []const u8, args: anytype) noreturn {
 }
 
 fn handleStdout(stdoutArgs: StdoutArgs, allocator: std.mem.Allocator) void {
+    if (stdoutArgs.hash == HashKind.Xxhash) {
+        std.debug.print("Xxhash support is unimplemented.\n\n", .{});
+        exit(1);
+    } else if (stdoutArgs.hash == HashKind.Sha1) {
+        std.debug.print("SHA-1 support is unimplemented.\n\n", .{});
+        exit(1);
+    }
+
     var file: stdfile = undefined;
     if (std.fs.path.isAbsolute(stdoutArgs.inputFname)) {
         file = std.fs
@@ -185,42 +194,38 @@ fn handleStdout(stdoutArgs: StdoutArgs, allocator: std.mem.Allocator) void {
             .openFile(stdoutArgs.inputFname, stdfile.OpenFlags{}) catch |err|
             handleOpenError(err, stdoutArgs.inputFname);
     }
+
+    const fstat: std.fs.File.Stat = file.stat() catch printAndExitWithError("Unable to stat.", .{});
     const reader = stdfile.reader(file);
     var buffered_reader = std.io.bufferedReader(reader);
-    const slice: []u8 = allocator.alloc(u8, @as(usize, stdoutArgs.chunkSize) * 1000) catch printAndExitWithError("Unable to allocate memory.", .{});
-    defer allocator.free(slice);
 
-    var bytesRead: usize = buffered_reader.read(slice) catch |err| handleReadError(err);
+    const fBuffer: []u8 = allocator.alloc(u8, fstat.size) catch printAndExitWithError("Unable to allocate memory.", .{});
+    defer allocator.free(fBuffer);
+    const bytesRead: usize = buffered_reader.read(fBuffer) catch |err| handleReadError(err);
+    if (bytesRead == 0) {
+        printAndExitWithError("Unable to read file", .{});
+    }
 
     var i: usize = 0;
-    if (stdoutArgs.hash == HashKind.Xxhash) {
-        std.debug.print("Xxhash support is unimplemented.\n\n", .{});
-        exit(1);
-    }
-    while (bytesRead > 0) : (bytesRead = buffered_reader.read(slice) catch |err| handleReadError(err)) {
-        std.debug.print("Chunk: {d}\tOffset: {d}\tHash: ", .{ i, i * stdoutArgs.chunkSize });
-        switch (stdoutArgs.hash) {
-            HashKind.Sha256 => {
-                var result: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
-                std.crypto.hash.sha2.Sha256.hash(slice, &result, .{});
-                for (result) |byte| {
-                    std.debug.print("{x:0>2}", .{byte});
-                }
-                std.debug.print("\n", .{});
-            },
-            HashKind.Sha1 => {
-                var result: [std.crypto.hash.Sha1.digest_length]u8 = undefined;
-                std.crypto.hash.Sha1.hash(slice, &result, .{});
-                for (result) |byte| {
-                    std.debug.print("{x:0>2}", .{byte});
-                }
-                std.debug.print("\n", .{});
-            },
-            HashKind.Xxhash => {
-                std.debug.print("Unimplemented.\n", .{}); // TODO: Implement this?
-                exit(1);
-            },
+    var offset: usize = 0;
+
+    std.debug.print("File: {s}\n", .{stdoutArgs.inputFname});
+    std.debug.print("Chunk\tOffset\tHash\n", .{});
+
+    var resBuf: [sha2.Sha256.digest_length]u8 = undefined;
+
+    while (offset < fstat.size) : (offset += stdoutArgs.chunkSize) {
+        // std.debug.print("{d}\t{d}\t", .{ i, offset });
+        if (offset + stdoutArgs.chunkSize > bytesRead) {
+            sha2.Sha256.hash(fBuffer[offset..], &resBuf, .{});
+        } else {
+            sha2.Sha256.hash(fBuffer[offset .. offset + stdoutArgs.chunkSize], &resBuf, .{});
         }
+        // for (resBuf) |byte| {
+        //     std.debug.print("{x:0>2}", .{byte});
+        // }
+        // std.debug.print("\n", .{});
+
         i += 1;
     }
 }
