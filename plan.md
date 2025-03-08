@@ -36,27 +36,36 @@
 
 
 ## Currently Working On
-- [ ] read the whole file into memory and see if that helps with performance.
+- [ ] support multi-threading
+  - hell yeah, goes from 1.2sec singlethreaded for 2.1gb to 223ms.
+- [ ] compute an overall hash
+  - use a merkle tree?
+
 
 ## Immediate Next-Up
-- [ ] figure out why single-threaded hash performance does not line up with [napkin math](https://github.com/sirupsen/napkin-math)
-   - hashing a 2GB file takes me 44 secs, when napkin math suggests that throughput is 2GiB/s
-   - maybe has to do with sequential SSD read, but that as well is 4GiB/s
-   - experiment with (1) reading larger sizes into memory before hashing chunks and (2) reading whole file into memory
-- [ ] Store hash results in an arraylist so that we can either output or write to file
-- [ ] Only print at end, after computing hashes
-- [ ] Compute overall hash
-- [ ] Actually understand if `final` is doing the right thing
-- [ ] Figure out if I can use tagged union for hashes? prob not because not comptime
+- [ ] implement writing to file
+- [ ] implement implement json mode
+- [ ] implement summary mode
+- [ ] log file size and time to hash so we can output throughput
+- [ ] compute an overall hash always
 - [ ] (stretch?) Implement xxhash
 
-
 ### Side-quests
-- [ ] have a way to quickly add stuff to a "later" checklist so that I can forget about it
-- [ ] add codecompanion and copilot?
 - [ ] Figure out how to fix zig autofmt to not have such long lines?
 
 ### Done
+- [x] changing the implementation back to not read the whole file into memory
+- [x] read the whole file into memory and see if that helps with performance.
+  - initially, this did not work. I wasn't sure why. So I spun up a huge box on vultr and it was faster. So definitely the processor power matters even if single threaded.
+  - on my m3 max, the time did not change at all. i.e. ~45 secs to hash my 2gb file even when everything was in memory
+  - then i realized that i was compiling in debug mode. changing this to --release=fast took it down to 6sec.
+  - I think this must be the bottleneck then? Would be curious to learn if there are better ideas
+  - on the xeon box, hashing the file takes ~1.6 sec which is about 1.25 GB/s which lines up with [this comment](https://github.com/sirupsen/napkin-math/pull/32#issue-2501810610)
+- [x] figure out why single-threaded hash performance does not line up with [napkin math](https://github.com/sirupsen/napkin-math)
+   - hashing a 2GB file takes me 44 secs, when napkin math suggests that throughput is 2GiB/s
+   - maybe has to do with sequential SSD read, but that as well is 4GiB/s
+   - experiment with (1) reading larger sizes into memory before hashing chunks and (2) reading whole file into memory
+     - reading file differently didn't change performance. this makes sense because the hashing bandwidth is the bottleneck, not reading from a (fast) disk.
 - [x] actually read the file in specified KB instad of bytes
 - [x] unrelated: syntax highlighting for TODO
 - [x] Start basic impl

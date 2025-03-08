@@ -16,22 +16,25 @@ const HELP_TEXT =
     \\
 ;
 
-const HashKind = enum { Sha256, Sha1, Xxhash };
+const HashKind = enum {
+    Sha256,
+    // TODO: Implement these
+    // Sha1,
+    // Xxhash
+};
 const ModeKind = enum { Summary, Json, Chunks };
-
-const ArgsType = enum { help, file, stdout };
 
 const HelpArgs = struct {};
 const FileArgs = struct {
-    /// User can specify up to 2^16 = 65,536 byte chunks
+    // TODO: this is in bytes for now, maybe change to KB?
     chunkSize: u32,
     hash: HashKind = HashKind.Sha256,
     mode: ModeKind = ModeKind.Summary,
     outputFname: []const u8,
     inputFname: []const u8,
     /// if not provided, we will only use a single thread
-    /// if -1 is provided we use all available cores
-    threads: ?i8, // -1 means use num cores
+    /// if 0 is provided we use all available cores
+    threads: u8 = 0, // -1 means use num cores
 };
 const StdoutArgs = struct {
     chunkSize: u32,
@@ -40,18 +43,18 @@ const StdoutArgs = struct {
     outputFname: ?[]const u8 = null,
     inputFname: []const u8,
     /// if not provided, we will only use a single thread
-    /// if -1 is provided we use all available cores
-    threads: ?i8,
+    /// if 0 is provided we use all available cores
+    threads: u8 = 0,
 };
 
-const Args = union(ArgsType) { help: HelpArgs, file: FileArgs, stdout: StdoutArgs };
+const Args = union(enum) { help: HelpArgs, file: FileArgs, stdout: StdoutArgs };
 
 fn parseArgs(args: *std.process.ArgIterator, inputFnameBuf: [*]u8, outputFnameBuf: [*]u8) Args {
     _ = args.skip(); // skip executable
     var mode: ModeKind = ModeKind.Summary;
     var hash: HashKind = HashKind.Sha256;
     var chunkSize: u32 = 64;
-    var nThreads: i8 = 1;
+    var nThreads: u8 = 0;
     var inFile: ?[]const u8 = null;
     var outFile: ?[]const u8 = null;
 
@@ -83,10 +86,10 @@ fn parseArgs(args: *std.process.ArgIterator, inputFnameBuf: [*]u8, outputFnameBu
             const hashStr = split.next().?;
             if (std.mem.eql(u8, hashStr, "sha256")) {
                 hash = HashKind.Sha256;
-            } else if (std.mem.eql(u8, hashStr, "sha1")) {
-                hash = HashKind.Sha1;
-            } else if (std.mem.eql(u8, hashStr, "xxhash")) {
-                hash = HashKind.Xxhash;
+                // } else if (std.mem.eql(u8, hashStr, "sha1")) {
+                //     hash = HashKind.Sha1;
+                // } else if (std.mem.eql(u8, hashStr, "xxhash")) {
+                //     hash = HashKind.Xxhash;
             } else {
                 std.debug.print("Unrecognized hashing function provided: {s}\n\n", .{hashStr});
                 return Args{ .help = HelpArgs{} };
@@ -113,7 +116,7 @@ fn parseArgs(args: *std.process.ArgIterator, inputFnameBuf: [*]u8, outputFnameBu
             outFile = outputFnameBuf[0..fname.len];
         } else if (std.mem.eql(u8, flag, "--threads")) {
             const nThreadStr = split.next().?;
-            nThreads = std.fmt.parseInt(i8, nThreadStr, 0) catch |err| switch (err) {
+            nThreads = std.fmt.parseInt(u8, nThreadStr, 0) catch |err| switch (err) {
                 std.fmt.ParseIntError.Overflow => {
                     std.debug.print("Provided num threads is too large. Max supported size is 127. Provided: {s}\n", .{nThreadStr});
                     std.process.exit(1);
@@ -176,14 +179,6 @@ fn printAndExitWithError(comptime msg: []const u8, args: anytype) noreturn {
 }
 
 fn handleStdout(stdoutArgs: StdoutArgs, allocator: std.mem.Allocator) void {
-    if (stdoutArgs.hash == HashKind.Xxhash) {
-        std.debug.print("Xxhash support is unimplemented.\n\n", .{});
-        exit(1);
-    } else if (stdoutArgs.hash == HashKind.Sha1) {
-        std.debug.print("SHA-1 support is unimplemented.\n\n", .{});
-        exit(1);
-    }
-
     var file: stdfile = undefined;
     if (std.fs.path.isAbsolute(stdoutArgs.inputFname)) {
         file = std.fs
@@ -194,40 +189,112 @@ fn handleStdout(stdoutArgs: StdoutArgs, allocator: std.mem.Allocator) void {
             .openFile(stdoutArgs.inputFname, stdfile.OpenFlags{}) catch |err|
             handleOpenError(err, stdoutArgs.inputFname);
     }
+    defer file.close();
 
-    const fstat: std.fs.File.Stat = file.stat() catch printAndExitWithError("Unable to stat.", .{});
-    const reader = stdfile.reader(file);
-    var buffered_reader = std.io.bufferedReader(reader);
-
-    const fBuffer: []u8 = allocator.alloc(u8, fstat.size) catch printAndExitWithError("Unable to allocate memory.", .{});
-    defer allocator.free(fBuffer);
-    const bytesRead: usize = buffered_reader.read(fBuffer) catch |err| handleReadError(err);
-    if (bytesRead == 0) {
-        printAndExitWithError("Unable to read file", .{});
+    var pool: std.Thread.Pool = undefined;
+    if (stdoutArgs.threads == 0) {
+        pool.init(.{ .allocator = allocator }) catch printAndExitWithError("Unable to init threadpool", .{});
+    } else {
+        pool.init(.{ .allocator = allocator, .n_jobs = @as(u32, stdoutArgs.threads) }) catch printAndExitWithError("Unable to init threadpool", .{});
     }
 
-    var i: usize = 0;
-    var offset: usize = 0;
+    const stat: stdfile.Stat = file.stat() catch printAndExitWithError("Unable to stat file.\n", .{});
+    const size: u64 = stat.size;
+    const chunks: u64 = (size + stdoutArgs.chunkSize - 1) / stdoutArgs.chunkSize;
+
+    // need to pre-allocate space where each thread will write their hash
+    // each sha256 is 32 bytes
+    // so we need 32 bytes * chunks
+    const hashes = allocator.alloc(u8, chunks * 32) catch printAndExitWithError("Unable to allocate memory for hashes", .{});
+
+    for (0..chunks) |chunkIdx| {
+        // each thread needs to open its own FD because it needs to seek from a specific place on disk
+        // each thread needs access to just the output and the idx I suppose
+        pool.spawn(hashChunk, .{ chunkIdx, hashes, stdoutArgs, allocator }) catch printAndExitWithError("unable to spawn thread\n", .{});
+    }
+    pool.deinit();
 
     std.debug.print("File: {s}\n", .{stdoutArgs.inputFname});
     std.debug.print("Chunk\tOffset\tHash\n", .{});
-
-    var resBuf: [sha2.Sha256.digest_length]u8 = undefined;
-
-    while (offset < fstat.size) : (offset += stdoutArgs.chunkSize) {
-        // std.debug.print("{d}\t{d}\t", .{ i, offset });
-        if (offset + stdoutArgs.chunkSize > bytesRead) {
-            sha2.Sha256.hash(fBuffer[offset..], &resBuf, .{});
-        } else {
-            sha2.Sha256.hash(fBuffer[offset .. offset + stdoutArgs.chunkSize], &resBuf, .{});
+    for (0..chunks) |chunkIdx| {
+        std.debug.print("{d}\t{d}\t", .{ chunkIdx, chunkIdx * stdoutArgs.chunkSize });
+        for (hashes[chunkIdx * 32 .. (chunkIdx + 1) * 32]) |byte| {
+            std.debug.print("{x:0>2}", .{byte});
         }
-        // for (resBuf) |byte| {
-        //     std.debug.print("{x:0>2}", .{byte});
-        // }
-        // std.debug.print("\n", .{});
-
-        i += 1;
+        std.debug.print("\n", .{});
     }
+
+    // afterwards we should print out all the hashes
+
+    // const reader = stdfile.reader(file);
+    // var buffered_reader = std.io.bufferedReader(reader);
+    //
+    // const fBuffer: []u8 = allocator.alloc(u8, stdoutArgs.chunkSize) catch printAndExitWithError("Unable to allocate memory.", .{});
+    // defer allocator.free(fBuffer);
+    //
+    // var i: usize = 0;
+    // var offset: usize = 0;
+    // var resBuf: [sha2.Sha256.digest_length]u8 = undefined;
+    //
+    // std.debug.print("File: {s}\n", .{stdoutArgs.inputFname});
+    // std.debug.print("Chunk\tOffset\tHash\n", .{});
+    //
+    // var bytesRead: usize = buffered_reader.read(fBuffer) catch |err| handleReadError(err);
+    // if (bytesRead == 0) {
+    //     printAndExitWithError("Unable to read file", .{});
+    // }
+    // var hasher = sha2.Sha256.init(.{});
+    // while (bytesRead > 0) : (bytesRead = buffered_reader.read(fBuffer) catch |err| handleReadError(err)) {
+    //     std.debug.print("{d}\t{d}\t", .{ i, offset });
+    //     sha2.Sha256.hash(fBuffer, &resBuf, .{});
+    //     hasher.update(fBuffer);
+    //
+    //     for (resBuf) |byte| {
+    //         std.debug.print("{x:0>2}", .{byte});
+    //     }
+    //     std.debug.print("\n", .{});
+    //
+    //     i += 1;
+    //     offset += stdoutArgs.chunkSize;
+    // }
+    //
+    // var finalHash: [sha2.Sha256.digest_length]u8 = undefined;
+    // hasher.final(&finalHash);
+    // std.debug.print("Final hash: ", .{});
+    // for (finalHash) |byte| {
+    //     std.debug.print("{x:0>2}", .{byte});
+    // }
+    // std.debug.print("\n", .{});
+}
+
+fn hashChunk(chunkIdx: usize, hashes: []u8, args: StdoutArgs, allocator: std.mem.Allocator) void {
+    // std.debug.print("Starting to process chunk {d}\n", .{chunkIdx});
+    var file: stdfile = undefined;
+    if (std.fs.path.isAbsolute(args.inputFname)) {
+        file = std.fs
+            .openFileAbsolute(args.inputFname, stdfile.OpenFlags{}) catch |err|
+            handleOpenError(err, args.inputFname);
+    } else {
+        file = std.fs.cwd()
+            .openFile(args.inputFname, stdfile.OpenFlags{}) catch |err|
+            handleOpenError(err, args.inputFname);
+    }
+    defer file.close();
+
+    const fbuffer = allocator.alloc(u8, args.chunkSize) catch printAndExitWithError("unable to allocate mem\n", .{});
+    defer allocator.free(fbuffer);
+    file.seekTo(chunkIdx * args.chunkSize) catch printAndExitWithError("unable to seek to chunkIdx: {d}", .{chunkIdx});
+    const reader = stdfile.reader(file);
+    var buffered_reader = std.io.bufferedReader(reader);
+    const bytesRead: usize = buffered_reader.read(fbuffer) catch |err| handleReadError(err);
+    if (bytesRead == 0) {
+        printAndExitWithError("error reading from file at idx {d}\n", .{chunkIdx});
+    }
+
+    var resbuf: [sha2.Sha256.digest_length]u8 = undefined;
+
+    sha2.Sha256.hash(fbuffer[0..bytesRead], &resbuf, .{});
+    @memcpy(hashes[chunkIdx * 32 .. (chunkIdx + 1) * 32], &resbuf);
 }
 
 pub fn main() !void {
@@ -238,8 +305,8 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
     switch (zcargs) {
-        ArgsType.help => std.debug.print("{s}\n\n", .{HELP_TEXT}),
-        ArgsType.file => handleFile(zcargs.file),
-        ArgsType.stdout => handleStdout(zcargs.stdout, allocator),
+        Args.help => std.debug.print("{s}\n\n", .{HELP_TEXT}),
+        Args.file => handleFile(zcargs.file),
+        Args.stdout => handleStdout(zcargs.stdout, allocator),
     }
 }
