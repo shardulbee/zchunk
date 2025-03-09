@@ -36,13 +36,13 @@
 
 
 ## Currently Working On
-- [ ] support multi-threading
-  - hell yeah, goes from 1.2sec singlethreaded for 2.1gb to 223ms.
-- [ ] compute an overall hash
-  - use a merkle tree?
-
+- [ ] special case single-threaded to just use a loop instead of threadpool
+  - avoid the overhead. currently we open a fd every time we read a chunk which is unnecessary and also we don't read the data sequentially
 
 ## Immediate Next-Up
+- [ ] write tests
+- [ ] compute an overall hash
+  - use a merkle tree?
 - [ ] implement writing to file
 - [ ] implement implement json mode
 - [ ] implement summary mode
@@ -54,6 +54,9 @@
 - [ ] Figure out how to fix zig autofmt to not have such long lines?
 
 ### Done
+- [x] support multi-threading
+  - hell yeah, goes from 1.2sec singlethreaded for 2.1gb to 223ms.
+  - dropped to 113ms if we pre-allocate the chunk buffer for all threads instead of allocating in each thread
 - [x] changing the implementation back to not read the whole file into memory
 - [x] read the whole file into memory and see if that helps with performance.
   - initially, this did not work. I wasn't sure why. So I spun up a huge box on vultr and it was faster. So definitely the processor power matters even if single threaded.
