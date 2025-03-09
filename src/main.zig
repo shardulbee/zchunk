@@ -34,7 +34,7 @@ const FileArgs = struct {
     inputFname: []const u8,
     /// if not provided, we will only use a single thread
     /// if 0 is provided we use all available cores
-    threads: u8 = 0, // -1 means use num cores
+    threads: u8 = 1,
 };
 const StdoutArgs = struct {
     chunkSize: u32,
@@ -44,7 +44,7 @@ const StdoutArgs = struct {
     inputFname: []const u8,
     /// if not provided, we will only use a single thread
     /// if 0 is provided we use all available cores
-    threads: u8 = 0,
+    threads: u8 = 1,
 };
 
 const Args = union(enum) { help: HelpArgs, file: FileArgs, stdout: StdoutArgs };
@@ -54,7 +54,7 @@ fn parseArgs(args: *std.process.ArgIterator, inputFnameBuf: [*]u8, outputFnameBu
     var mode: ModeKind = ModeKind.Summary;
     var hash: HashKind = HashKind.Sha256;
     var chunkSize: u32 = 64;
-    var nThreads: u8 = 0;
+    var nThreads: u8 = 1;
     var inFile: ?[]const u8 = null;
     var outFile: ?[]const u8 = null;
 
@@ -163,6 +163,18 @@ fn handleReadError(err: stdfile.ReadError) noreturn {
     exit(1);
 }
 
+fn open_file_from_fname(fname: []const u8) std.fs.File {
+    if (std.fs.path.isAbsolute(fname)) {
+        return std.fs
+            .openFileAbsolute(fname, stdfile.OpenFlags{}) catch |err|
+            handleOpenError(err, fname);
+    } else {
+        return std.fs.cwd()
+            .openFile(fname, stdfile.OpenFlags{}) catch |err|
+            handleOpenError(err, fname);
+    }
+}
+
 fn handleOpenError(err: stdfile.OpenError, path: []const u8) noreturn {
     switch (err) {
         stdfile.OpenError.FileNotFound => {
@@ -178,88 +190,59 @@ fn printAndExitWithError(comptime msg: []const u8, args: anytype) noreturn {
     exit(1);
 }
 
-fn handleStdout(stdoutArgs: StdoutArgs, allocator: std.mem.Allocator) void {
-    var file: stdfile = undefined;
-    if (std.fs.path.isAbsolute(stdoutArgs.inputFname)) {
-        file = std.fs
-            .openFileAbsolute(stdoutArgs.inputFname, stdfile.OpenFlags{}) catch |err|
-            handleOpenError(err, stdoutArgs.inputFname);
-    } else {
-        file = std.fs.cwd()
-            .openFile(stdoutArgs.inputFname, stdfile.OpenFlags{}) catch |err|
-            handleOpenError(err, stdoutArgs.inputFname);
-    }
+// what do i need to not make this stdoutArgs
+// 1. nthreads
+// 2. file
+// 3. chunksize
+// 4. allocator
+fn compute_hashes(fname: []const u8, stdoutArgs: StdoutArgs, allocator: std.mem.Allocator) []u8 {
+    var file: std.fs.File = open_file_from_fname(fname);
     defer file.close();
 
     var pool: std.Thread.Pool = undefined;
     var nthreads: u32 = undefined;
     if (stdoutArgs.threads == 0) {
         nthreads = @truncate(std.Thread.getCpuCount() catch printAndExitWithError("unable to get cpu count\n", .{}));
-    } else if (stdoutArgs.threads == 1) {
-        const reader = stdfile.reader(file);
-        var buffered_reader = std.io.bufferedReader(reader);
-
-        const fBuffer: []u8 = allocator.alloc(u8, stdoutArgs.chunkSize) catch printAndExitWithError("Unable to allocate memory.", .{});
-        defer allocator.free(fBuffer);
-        //
-        // var i: usize = 0;
-        // var offset: usize = 0;
-        // var resBuf: [sha2.Sha256.digest_length]u8 = undefined;
-        //
-        // var bytesRead: usize = buffered_reader.read(fBuffer) catch |err| handleReadError(err);
-        // if (bytesRead == 0) {
-        //     printAndExitWithError("Unable to read file", .{});
-        // }
-        // var hasher = sha2.Sha256.init(.{});
-        // while (bytesRead > 0) : (bytesRead = buffered_reader.read(fBuffer) catch |err| handleReadError(err)) {
-        //     std.debug.print("{d}\t{d}\t", .{ i, offset });
-        //     sha2.Sha256.hash(fBuffer, &resBuf, .{});
-        //     hasher.update(fBuffer);
-        //
-        //     for (resBuf) |byte| {
-        //         std.debug.print("{x:0>2}", .{byte});
-        //     }
-        //     std.debug.print("\n", .{});
-        //
-        //     i += 1;
-        //     offset += stdoutArgs.chunkSize;
-        // }
-        //
-        // var finalHash: [sha2.Sha256.digest_length]u8 = undefined;
-        // hasher.final(&finalHash);
-        // std.debug.print("Final hash: ", .{});
-        // for (finalHash) |byte| {
-        //     std.debug.print("{x:0>2}", .{byte});
-        // }
-        // std.debug.print("\n", .{});
-
     } else {
         nthreads = stdoutArgs.threads;
     }
 
-    pool.init(.{ .allocator = allocator, .n_jobs = @as(u32, nthreads) }) catch printAndExitWithError("Unable to init threadpool", .{});
-
     const stat: stdfile.Stat = file.stat() catch printAndExitWithError("Unable to stat file.\n", .{});
     const size: u64 = stat.size;
-    const chunks: u64 = (size + stdoutArgs.chunkSize - 1) / stdoutArgs.chunkSize;
+    const nchunks: u64 = (size + stdoutArgs.chunkSize - 1) / stdoutArgs.chunkSize;
 
     // need to pre-allocate space where each thread will write their hash
     // each sha256 is 32 bytes so we need 32 bytes * chunks
-    const hashes = allocator.alloc(u8, chunks * 32) catch printAndExitWithError("Unable to allocate memory for hashes", .{});
-    defer allocator.free(hashes);
+    const hashes = allocator.alloc(u8, nchunks * 32) catch printAndExitWithError("Unable to allocate memory for hashes", .{});
 
-    // pre allocate a buffer into which each thread will read its data
-    const chunkbuffer = allocator.alloc(u8, nthreads * stdoutArgs.chunkSize) catch printAndExitWithError("Unable to allocate memory for hashes", .{});
-    defer allocator.free(chunkbuffer);
-
-    for (0..chunks) |chunkIdx| {
-        pool.spawn(hashChunk, .{ chunkIdx, chunkIdx % nthreads, chunkbuffer, hashes, stdoutArgs }) catch printAndExitWithError("unable to spawn thread\n", .{});
+    if (nthreads > 1) {
+        pool.init(.{ .allocator = allocator, .n_jobs = @as(u32, nthreads) }) catch printAndExitWithError("Unable to init threadpool", .{});
+        const chunks_per_thread: u64 = (nchunks + nthreads - 1) / nthreads;
+        for (0..nthreads) |thread_idx| {
+            pool.spawn(work, .{ chunks_per_thread, thread_idx, stdoutArgs, hashes, allocator }) catch |err| printAndExitWithError("Unable to spawn thread {d}. err: {any}", .{ thread_idx, err });
+        }
+        pool.deinit();
+    } else {
+        work(nchunks, 0, stdoutArgs, hashes, allocator);
     }
-    pool.deinit();
+
+    return hashes;
+}
+
+fn handleStdout(stdoutArgs: StdoutArgs, allocator: std.mem.Allocator) void {
+    var file = open_file_from_fname(stdoutArgs.inputFname);
+    defer file.close();
+
+    const stat: stdfile.Stat = file.stat() catch printAndExitWithError("Unable to stat file.\n", .{});
+    const size: u64 = stat.size;
+    const nchunks: u64 = (size + stdoutArgs.chunkSize - 1) / stdoutArgs.chunkSize;
+
+    const hashes = compute_hashes(stdoutArgs.inputFname, stdoutArgs, allocator);
+    defer allocator.free(hashes);
 
     std.debug.print("File: {s}\n", .{stdoutArgs.inputFname});
     std.debug.print("Chunk\tOffset\tHash\n", .{});
-    for (0..chunks) |chunkIdx| {
+    for (0..nchunks) |chunkIdx| {
         std.debug.print("{d}\t{d}\t", .{ chunkIdx, chunkIdx * stdoutArgs.chunkSize });
         for (hashes[chunkIdx * 32 .. (chunkIdx + 1) * 32]) |byte| {
             std.debug.print("{x:0>2}", .{byte});
@@ -268,32 +251,27 @@ fn handleStdout(stdoutArgs: StdoutArgs, allocator: std.mem.Allocator) void {
     }
 }
 
-fn hashChunk(chunkIdx: usize, chunkbufidx: usize, chunkbuffer: []u8, hashes: []u8, args: StdoutArgs) void {
-    var file: stdfile = undefined;
-    if (std.fs.path.isAbsolute(args.inputFname)) {
-        file = std.fs
-            .openFileAbsolute(args.inputFname, stdfile.OpenFlags{}) catch |err|
-            handleOpenError(err, args.inputFname);
-    } else {
-        file = std.fs.cwd()
-            .openFile(args.inputFname, stdfile.OpenFlags{}) catch |err|
-            handleOpenError(err, args.inputFname);
-    }
+fn work(nchunks: u64, thread_idx: usize, args: StdoutArgs, hashes: []u8, allocator: std.mem.Allocator) void {
+    var file = open_file_from_fname(args.inputFname);
     defer file.close();
 
-    const fbuffer = chunkbuffer[chunkbufidx * args.chunkSize .. (chunkbufidx + 1) * args.chunkSize];
-    file.seekTo(chunkIdx * args.chunkSize) catch printAndExitWithError("unable to seek to chunkIdx: {d}", .{chunkIdx});
+    file.seekTo(thread_idx * nchunks * args.chunkSize) catch |err| printAndExitWithError("Unable to seek to correct file location for thread {d}. err: {any}\n", .{ thread_idx, err });
     const reader = stdfile.reader(file);
     var buffered_reader = std.io.bufferedReader(reader);
-    const bytesRead: usize = buffered_reader.read(fbuffer) catch |err| handleReadError(err);
-    if (bytesRead == 0) {
-        printAndExitWithError("error reading from file at idx {d}\n", .{chunkIdx});
+
+    var fbuffer = allocator.alloc(u8, args.chunkSize) catch |err| printAndExitWithError("Unable to allocate fbuffer for thread_idx {d}. err: {any}", .{ thread_idx, err });
+    defer allocator.free(fbuffer);
+
+    var bytes_read: u64 = 0;
+    var hashBuf: []u8 = undefined;
+    for (0..nchunks) |chunk_idx| {
+        hashBuf = hashes[(thread_idx * nchunks + chunk_idx) * 32 .. (thread_idx * nchunks + chunk_idx + 1) * 32];
+        bytes_read = buffered_reader.read(fbuffer) catch |err| handleReadError(err);
+        sha2.Sha256.hash(fbuffer[0..bytes_read], @ptrCast(hashBuf), .{});
+        if (bytes_read != args.chunkSize) {
+            break;
+        }
     }
-
-    var resbuf: [sha2.Sha256.digest_length]u8 = undefined;
-
-    sha2.Sha256.hash(fbuffer[0..bytesRead], &resbuf, .{});
-    @memcpy(hashes[chunkIdx * 32 .. (chunkIdx + 1) * 32], &resbuf);
 }
 
 pub fn main() !void {
