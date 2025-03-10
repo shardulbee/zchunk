@@ -1,13 +1,10 @@
 ## PLAN
 
 ## NOW
-- [ ] refactor such that i dont have to pass args around?
-- [ ] pass a chunkbuffer to each thread
 - [ ] write test to compute hash
   - randly perturb a chunk and make sure the hash is different
 - [ ] compute an overall hash
 ## TODO
-  - use a merkle tree?
 - [ ] implement writing to file
 - [ ] implement implement json mode
 - [ ] implement summary mode
