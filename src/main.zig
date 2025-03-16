@@ -265,11 +265,11 @@ fn compute_hashes(args: Args, allocator: std.mem.Allocator) []u8 {
 
     if (nthreads > 1) {
         pool.init(.{ .allocator = allocator, .n_jobs = @as(u32, nthreads) }) catch print_and_exit_with_error("Unable to init threadpool", .{});
+        defer pool.deinit();
         const chunks_per_thread: u64 = (nchunks + nthreads - 1) / nthreads;
         for (0..nthreads) |thread_idx| {
             pool.spawn(work, .{ chunks_per_thread, thread_idx, args, hashes, allocator }) catch |err| print_and_exit_with_error("Unable to spawn thread {d}. err: {any}", .{ thread_idx, err });
         }
-        pool.deinit();
     } else {
         work(nchunks, 0, args, hashes, allocator);
     }
@@ -362,7 +362,7 @@ fn output_by_mode(args: Args, writer: anytype, size: u64, nchunks: u64, hashes: 
 }
 
 fn output_summary(args: Args, writer: anytype, size: u64, nchunks: u64, hashes: []const u8, merkle_tree: []const u8, processing_time_ms: u64, throughput_mb_s: f64) !void {
-    _ = hashes; // Not used in summary mode, but kept for consistent function signature
+    _ = hashes;
     var size_buf: [32]u8 = undefined;
     const size_str = try format_size_human_readable(size, &size_buf);
 
@@ -903,7 +903,8 @@ pub fn main() !void {
     var input_fname_buf: [255]u8 = [_]u8{0} ** 255;
     var output_fname_buf: [255]u8 = [_]u8{0} ** 255;
     const parsed_args = parse_args(&args, &input_fname_buf, &output_fname_buf);
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.GeneralPurposeAllocator(.{ .safety = true }){};
+    defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
     if (parsed_args) |a| {
