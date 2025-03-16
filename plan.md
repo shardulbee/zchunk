@@ -3,16 +3,20 @@
 ## NOW
 
 ## TODO
-- [ ] implement writing to file
-- [ ] implement implement json mode
-- [ ] implement summary mode
 - [ ] look into content-defined chunking for stuff like syncing
 - [ ] implement xxhash
+- [ ] blog post?
+
+## DONE
 
 ## QUESTIONS
-- do we want to handle piping data in?
 
 ### DONE
+- do we want to handle piping data in?
+  - nah, doesn't really help with learning systems/perf really?
+- [x] implement writing to file
+- [x] implement json mode
+- [x] implement summary mode and chunks mode
 - for data backup/sync purposes, what if you add 1 byte to the beginning of the file. won't that cause all hashes to be different, meaning you have to probably sync everything?
   - yes, this is why [content-defined chunking](https://joshleeb.com/posts/content-defined-chunking.html) exists
 - [x] write test to compute hash
@@ -20,7 +24,7 @@
 - [x] compute an overall hash
   - this is the merkle root. Building the merkle tree takes around ~8ms for the 2GB file
 - [x] make single thread more streamlined
-- My original conclusion that the xeon server was more performant because of better processor speed was wrong. with the recent changes to the implementation, I now get closer to the napkin math numbers even on my personal laptop, and it turns out that it is more performant on my local machine (single threaded and multithreaded) than the xeon machine. Asking claude, M3 max is stronker than E-2388G xeon processor.
+- My original conclusion that the xeon server was more performant because of better processor speed was wrong. with the recent changes to the implementation (removing allocations in a loop), I now get closer to the napkin math numbers even on my personal laptop, and it turns out that it is more performant on my local machine (single threaded and multithreaded) than the xeon machine. Asking claude, M3 max is stronker than E-2388G xeon processor.
 - [x] special case single-threaded to just use a loop instead of threadpool
   - avoid the overhead. currently we open a fd every time we read a chunk which is unnecessary and also we don't read the data sequentially
 - [x] support multi-threading

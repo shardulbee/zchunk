@@ -40,7 +40,7 @@ fn parse_args(args: *std.process.ArgIterator, input_fname_buf: [*]u8, output_fna
     _ = args.skip(); // skip executable
     var mode: Mode = Mode.summary;
     var hash: Hash = Hash.sha256;
-    var chunk_size: u32 = 64;
+    var chunk_size: u32 = 1024 * 1024; // Default 1024 KB (1MB)
     var n_threads: u8 = 1;
     var in_file: ?[]const u8 = null;
     var out_file: ?[]const u8 = null;
@@ -83,9 +83,9 @@ fn parse_args(args: *std.process.ArgIterator, input_fname_buf: [*]u8, output_fna
             }
         } else if (std.mem.eql(u8, flag, "--chunk-size")) {
             const chunk_size_str = split.next().?;
-            chunk_size = std.fmt.parseInt(u32, chunk_size_str, 0) catch |err| switch (err) {
+            const kb_size = std.fmt.parseInt(u32, chunk_size_str, 0) catch |err| switch (err) {
                 std.fmt.ParseIntError.Overflow => {
-                    std.debug.print("Provided chunk-size is too large. Max supported size is 65536. Provided: {s}\n", .{chunk_size_str});
+                    std.debug.print("Provided chunk-size is too large. Max supported size is 65536 KB. Provided: {s}\n", .{chunk_size_str});
                     std.process.exit(1);
                 },
                 std.fmt.ParseIntError.InvalidCharacter => {
@@ -93,6 +93,8 @@ fn parse_args(args: *std.process.ArgIterator, input_fname_buf: [*]u8, output_fna
                     std.process.exit(1);
                 },
             };
+            // Convert KB to bytes
+            chunk_size = kb_size * 1024;
         } else if (std.mem.eql(u8, flag, "--output")) {
             const fname = split.next().?;
             if (fname.len > 255) {
@@ -275,35 +277,185 @@ fn compute_hashes(args: Args, allocator: std.mem.Allocator) []u8 {
     return hashes;
 }
 
-fn handle_stdout(stdout_args: Args, allocator: std.mem.Allocator) void {
-    var file = open_file_from_fname(stdout_args.in_fname);
+fn format_size_human_readable(size: u64, buf: []u8) ![]const u8 {
+    var fbs = std.io.fixedBufferStream(buf);
+    var writer = fbs.writer();
+
+    if (size < 1024) {
+        try writer.print("{d} bytes", .{size});
+    } else if (size < 1024 * 1024) {
+        try writer.print("{d:.2} KB", .{@as(f64, @floatFromInt(size)) / 1024});
+    } else if (size < 1024 * 1024 * 1024) {
+        try writer.print("{d:.2} MB", .{@as(f64, @floatFromInt(size)) / (1024 * 1024)});
+    } else {
+        try writer.print("{d:.2} GB", .{@as(f64, @floatFromInt(size)) / (1024 * 1024 * 1024)});
+    }
+
+    return fbs.getWritten();
+}
+
+fn format_hash_hex(hash: []const u8, buf: []u8) ![]const u8 {
+    var fbs = std.io.fixedBufferStream(buf);
+    var writer = fbs.writer();
+
+    for (hash) |byte| {
+        try writer.print("{x:0>2}", .{byte});
+    }
+
+    return fbs.getWritten();
+}
+
+fn handle_output(args: Args, allocator: std.mem.Allocator) void {
+    var file = open_file_from_fname(args.in_fname);
     defer file.close();
 
     const stat: stdfile.Stat = file.stat() catch print_and_exit_with_error("Unable to stat file.\n", .{});
     const size: u64 = stat.size;
-    const nchunks: u64 = (size + stdout_args.chunk_size - 1) / stdout_args.chunk_size;
+    const nchunks: u64 = (size + args.chunk_size - 1) / args.chunk_size;
 
-    const hashes = compute_hashes(stdout_args, allocator);
+    // Record start time
+    const start_time = std.time.milliTimestamp();
+
+    const hashes = compute_hashes(args, allocator);
     defer allocator.free(hashes);
 
     const merkle_tree = construct_merkle_tree(hashes, allocator);
     defer allocator.free(merkle_tree);
 
-    std.debug.print("File: {s}\n", .{stdout_args.in_fname});
-    std.debug.print("Chunk\tOffset\tHash\n", .{});
+    // Calculate processing time and throughput
+    const end_time = std.time.milliTimestamp();
+    const processing_time_ms = @as(u64, @intCast(end_time - start_time));
+    const processing_time_sec = @as(f64, @floatFromInt(processing_time_ms)) / 1000.0;
+
+    // Calculate throughput in MB/s
+    const throughput_mb_s = if (processing_time_sec > 0)
+        @as(f64, @floatFromInt(size)) / (1024 * 1024) / processing_time_sec
+    else
+        0;
+
+    // Create output writer based on whether we're writing to a file or stdout
+    if (args.out_fname) |out_fname| {
+        const out_file = std.fs.cwd().createFile(out_fname, .{ .read = true }) catch |err| {
+            print_and_exit_with_error("Error creating output file '{s}': {}\n", .{ out_fname, err });
+        };
+        defer out_file.close();
+
+        const writer = out_file.writer();
+        output_by_mode(args, writer, size, nchunks, hashes, merkle_tree, processing_time_ms, throughput_mb_s) catch |err| {
+            print_and_exit_with_error("Error writing to output file: {}\n", .{err});
+        };
+    } else {
+        // Write to stdout
+        const stdout = std.io.getStdOut().writer();
+        output_by_mode(args, stdout, size, nchunks, hashes, merkle_tree, processing_time_ms, throughput_mb_s) catch |err| {
+            print_and_exit_with_error("Error writing to stdout: {}\n", .{err});
+        };
+    }
+}
+
+fn output_by_mode(args: Args, writer: anytype, size: u64, nchunks: u64, hashes: []const u8, merkle_tree: []const u8, processing_time_ms: u64, throughput_mb_s: f64) !void {
+    switch (args.mode) {
+        .summary => try output_summary(args, writer, size, nchunks, hashes, merkle_tree, processing_time_ms, throughput_mb_s),
+        .json => try output_json(args, writer, size, nchunks, hashes, merkle_tree, processing_time_ms, throughput_mb_s),
+        .chunks => try output_chunks(args, writer, size, nchunks, hashes, merkle_tree),
+    }
+}
+
+fn output_summary(args: Args, writer: anytype, size: u64, nchunks: u64, hashes: []const u8, merkle_tree: []const u8, processing_time_ms: u64, throughput_mb_s: f64) !void {
+    _ = hashes; // Not used in summary mode, but kept for consistent function signature
+    var size_buf: [32]u8 = undefined;
+    const size_str = try format_size_human_readable(size, &size_buf);
+
+    var hash_buf: [64]u8 = undefined;
+    const merkle_root_hex = if (merkle_tree.len >= 32)
+        try format_hash_hex(merkle_tree[0..32], &hash_buf)
+    else
+        "(empty file)";
+
+    try writer.print("File: {s} ({s})\n", .{ args.in_fname, size_str });
+    try writer.print("Chunks: {d} ({d} KB each)\n", .{ nchunks, args.chunk_size / 1024 });
+    try writer.print("Processing time: {d:.2} seconds\n", .{@as(f64, @floatFromInt(processing_time_ms)) / 1000.0});
+    try writer.print("Throughput: {d:.1} MB/s\n", .{throughput_mb_s});
+    try writer.print("Overall hash: {s}\n", .{merkle_root_hex});
+}
+
+fn output_json(args: Args, writer: anytype, size: u64, nchunks: u64, hashes: []const u8, merkle_tree: []const u8, processing_time_ms: u64, throughput_mb_s: f64) !void {
+    var hash_buf: [64]u8 = undefined;
+    const merkle_root_hex = if (merkle_tree.len >= 32)
+        try format_hash_hex(merkle_tree[0..32], &hash_buf)
+    else
+        "";
+
+    try writer.print("{{\n", .{});
+    try writer.print("  \"filename\": \"{s}\",\n", .{args.in_fname});
+    try writer.print("  \"size\": {d},\n", .{size});
+    try writer.print("  \"chunk_size\": {d},\n", .{args.chunk_size});
+    try writer.print("  \"chunks\": [\n", .{});
+
     for (0..nchunks) |chunk_idx| {
-        std.debug.print("{d}\t{d}\t", .{ chunk_idx, chunk_idx * stdout_args.chunk_size });
-        for (hashes[chunk_idx * 32 .. (chunk_idx + 1) * 32]) |byte| {
-            std.debug.print("{x:0>2}", .{byte});
+        const last_chunk = chunk_idx == nchunks - 1;
+        const chunk_size = if (last_chunk and size % args.chunk_size != 0)
+            size % args.chunk_size
+        else
+            args.chunk_size;
+
+        try writer.print("    {{\n", .{});
+        try writer.print("      \"index\": {d},\n", .{chunk_idx});
+        try writer.print("      \"offset\": {d},\n", .{chunk_idx * args.chunk_size});
+        try writer.print("      \"size\": {d},\n", .{chunk_size});
+        try writer.print("      \"hash\": \"", .{});
+
+        if ((chunk_idx + 1) * 32 <= hashes.len) {
+            for (hashes[chunk_idx * 32 .. (chunk_idx + 1) * 32]) |byte| {
+                try writer.print("{x:0>2}", .{byte});
+            }
         }
-        std.debug.print("\n", .{});
+
+        try writer.print("\"{s}\n", .{if (chunk_idx == nchunks - 1) "" else ","});
+        try writer.print("    }}{s}\n", .{if (chunk_idx == nchunks - 1) "" else ","});
     }
 
-    std.debug.print("Overall hash: \t", .{});
-    for (merkle_tree[0..32]) |byte| {
-        std.debug.print("{x:0>2}", .{byte});
+    try writer.print("  ],\n", .{});
+    try writer.print("  \"overall_hash\": \"{s}\",\n", .{merkle_root_hex});
+    try writer.print("  \"processing_time_ms\": {d},\n", .{processing_time_ms});
+    try writer.print("  \"throughput_mb_s\": {d:.1}\n", .{throughput_mb_s});
+    try writer.print("}}\n", .{});
+}
+
+fn output_chunks(args: Args, writer: anytype, size: u64, nchunks: u64, hashes: []const u8, merkle_tree: []const u8) !void {
+    var size_buf: [32]u8 = undefined;
+    const size_str = try format_size_human_readable(size, &size_buf);
+
+    try writer.print("File: {s} ({s})\n", .{ args.in_fname, size_str });
+    try writer.print("Chunk  Offset      Size        Hash (SHA-256)\n", .{});
+
+    for (0..nchunks) |chunk_idx| {
+        const last_chunk = chunk_idx == nchunks - 1;
+        const chunk_size = if (last_chunk and size % args.chunk_size != 0)
+            size % args.chunk_size
+        else
+            args.chunk_size;
+
+        try writer.print("{d:<6} {d:<11} {d:<11} ", .{ chunk_idx, chunk_idx * args.chunk_size, chunk_size });
+
+        if ((chunk_idx + 1) * 32 <= hashes.len) {
+            for (hashes[chunk_idx * 32 .. (chunk_idx + 1) * 32]) |byte| {
+                try writer.print("{x:0>2}", .{byte});
+            }
+        }
+        try writer.print("\n", .{});
     }
-    std.debug.print("\n", .{});
+
+    // Add the merkle root hash
+    try writer.print("\nOverall hash: ", .{});
+    if (merkle_tree.len >= 32) {
+        for (merkle_tree[0..32]) |byte| {
+            try writer.print("{x:0>2}", .{byte});
+        }
+    } else {
+        try writer.print("(empty file)", .{});
+    }
+    try writer.print("\n", .{});
 }
 
 fn work(nchunks: u64, thread_idx: usize, args: Args, hashes: []u8, allocator: std.mem.Allocator) void {
@@ -755,7 +907,7 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     if (parsed_args) |a| {
-        handle_stdout(a, allocator);
+        handle_output(a, allocator);
     } else {
         std.debug.print("{s}\n\n", .{help_text});
     }
