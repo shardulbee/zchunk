@@ -3,7 +3,7 @@
 ## NOW
 
 ## TODO
-- [ ] look into content-defined chunking for stuff like syncing
+- [ ] implement CDC (content-defined chunking) with Rabin fingerprinting
 - [ ] implement xxhash
 - [ ] blog post?
 
@@ -12,6 +12,7 @@
 ## QUESTIONS
 
 ### DONE
+- [x] look into content-defined chunking for stuff like syncing
 - do we want to handle piping data in?
   - nah, doesn't really help with learning systems/perf really?
 - [x] implement writing to file
